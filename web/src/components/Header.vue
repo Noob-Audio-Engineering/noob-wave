@@ -49,7 +49,7 @@ function openMenu(e) {
     <div class="flex items-center gap-2 mr-2">
       <span class="w-2 h-2 rounded-full" :class="connected ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,.8)]' : 'bg-red-500'" />
       <span class="font-bold tracking-wide text-[13px]"><span class="text-accent">NOOB</span>-WAVE</span>
-      <span class="text-slate-600 text-[11px]">wavetable synth · by Ely Erin Fox</span>
+      <span class="text-slate-600 text-[11px]">wavetable synth · by Noob Audio Engineering</span>
     </div>
     <button class="tb" :disabled="!historyState.canUndo" title="Undo (Ctrl+Z)" @click="history.undo()">↶</button>
     <button class="tb" :disabled="!historyState.canRedo" title="Redo (Ctrl+Y)" @click="history.redo()">↷</button>

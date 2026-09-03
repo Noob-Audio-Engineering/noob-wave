@@ -393,7 +393,7 @@ pub fn param_specs() -> Vec<ParamSpec> {
 pub fn build_bridge(name: &str, sr: f32) -> (NoobVstWebguiFramework, ParamIx) {
     let mut b = NoobVstWebguiFramework::builder(name)
         .meta(json!({
-            "vendor": "Ely Erin Fox",
+            "vendor": "Noob Audio Engineering",
             "version": env!("CARGO_PKG_VERSION"),
             "sample_rate": sr,
             "voices": MAX_VOICES,
