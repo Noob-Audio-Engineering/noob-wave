@@ -9,29 +9,61 @@
  * key-to-sound path short. Notes arriving from the host (a DAW's MIDI track)
  * come back on the same channel and light the keys in the "remote" colour.
  *
- * The visible range is C2–C6 (MIDI 36–84) shifted by `ui.octave` (−3…+3,
- * changed here with the buttons or by the Z / X keys the component
- * handles itself; the component's `octave` field is kept in sync so its
- * QWERTY mapping moves too). No parameters, props or emits.
+ * The visible range is C2–C6 (MIDI 36–84) shifted by `ui.octave` (−3…+3),
+ * changed with the buttons here or with the Z / X keys the component
+ * handles itself. Both routes end in `applyOctave`, so the drawn keys, the
+ * computer keys and the read-out always agree and `a` is the lowest visible
+ * C whichever was used. No parameters, props or emits.
+ *
+ * Keeping them in step takes a little care. The component derives its
+ * QWERTY base note as `low + 12·octave`, and `setRange` is what sets `low`,
+ * so moving both fields shifts the letter keys twice as far as the drawn
+ * ones. `ui.octave` is therefore the single source of truth: it moves the
+ * drawn range, and the component's own `octave` is held at zero. Z and X
+ * change that field directly, so a `keydown` listener registered after the
+ * component's folds whatever it did back into `ui.octave` and zeroes it
+ * again.
  */
 import { onBeforeUnmount, onMounted, ref } from 'vue';
 import { Keyboard } from '@noob-audio-engineering/noob-vst-webgui-framework/components';
 import { getClient } from '@noob-audio-engineering/noob-vst-webgui-framework/vue';
 import { ui } from '../composables/useSynth.js';
 
+/** Lowest and highest drawn note at octave 0, and the shift limits. */
+const LOW = 36;
+const HIGH = 84;
+const MIN_OCT = -3;
+const MAX_OCT = 3;
+
 const el = ref(null);
 let kbd = null;
+
+/** Move the drawn range to `oct` octaves and put the QWERTY base back on its lowest key. */
+function applyOctave(oct) {
+  ui.octave = Math.max(MIN_OCT, Math.min(MAX_OCT, oct));
+  if (!kbd) return;
+  kbd.octave = 0;
+  kbd.setRange(LOW + ui.octave * 12, HIGH + ui.octave * 12);
+}
+
+// Z / X move the component's own octave field. Runs after the component's
+// handler, which is registered on `window` in its constructor.
+function onKeyDown() {
+  if (kbd && kbd.octave !== 0) applyOctave(ui.octave + kbd.octave);
+}
+
 onMounted(() => {
-  kbd = new Keyboard(el.value, getClient(), { low: 36, high: 84, velocity: 0.8 });
+  kbd = new Keyboard(el.value, getClient(), { low: LOW, high: HIGH, velocity: 0.8 });
+  applyOctave(ui.octave);
+  window.addEventListener('keydown', onKeyDown);
 });
-onBeforeUnmount(() => kbd?.destroy());
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown);
+  kbd?.destroy();
+});
 /** Shift the visible range and the QWERTY mapping by `d` octaves, within −3…+3. */
 function shift(d) {
-  ui.octave = Math.max(-3, Math.min(3, ui.octave + d));
-  if (kbd) {
-    kbd.octave = ui.octave;
-    kbd.setRange(36 + ui.octave * 12, 84 + ui.octave * 12);
-  }
+  applyOctave(ui.octave + d);
 }
 </script>
 
@@ -43,9 +75,9 @@ function shift(d) {
       <button class="chip" @click="shift(1)">+ oct</button>
     </div>
     <div ref="el" class="flex-1 min-w-0 rounded-lg overflow-hidden border border-white/[0.06]"></div>
-    <div class="w-32 shrink-0 text-[10px] text-slate-500 leading-tight flex flex-col justify-center gap-1">
-      <div>Play with the mouse, or the <b class="text-slate-300">A W S E D F …</b> keys.</div>
-      <div><b class="text-slate-300">Z</b> / <b class="text-slate-300">X</b> shift octaves.</div>
+    <div class="w-40 shrink-0 text-[10px] text-slate-500 leading-tight flex flex-col justify-center gap-1">
+      <div>Play with the mouse, or the computer keys.</div>
+      <div><b class="text-slate-300">a</b> is the lowest visible C; <b class="text-slate-300">Z</b> / <b class="text-slate-300">X</b> and the buttons shift octaves together.</div>
       <div>Host notes light the keys yellow.</div>
     </div>
   </footer>

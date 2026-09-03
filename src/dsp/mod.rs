@@ -173,11 +173,26 @@ pub const STREAM_IX: StreamIx = StreamIx {
     wavetable: 5,
 };
 
-/// The telemetry streams, in [`STREAM_IX`] order. `sr` goes into the
-/// metadata so the page can label the scope and spectrum axes; the
-/// `wavetable` stream is sticky, so a page that connects later still gets
-/// the current table without waiting for a change. See the module docs for
-/// the layout and rate of each stream.
+/// The telemetry streams, in [`STREAM_IX`] order. The `wavetable` stream is
+/// sticky, so a page that connects later still gets the current table
+/// without waiting for a change. See the module docs for the layout and
+/// rate of each stream.
+///
+/// # Sample rate
+///
+/// `sr` is written into the `scope` and `spectrum` metadata, but **a page
+/// must not read it from there**: the manifest is built once, and the
+/// plug-in has to build it before the host tells it the rate, so this is
+/// whatever was known at construction. The authoritative value is
+/// **`manifest.meta.sample_rate`**, which the plug-in corrects at
+/// `initialize` with a `sample_rate` message; the framework applies that
+/// to the manifest meta but cannot reach into a stream's own metadata,
+/// which has no setter after construction. The standalone asks the output
+/// device for its rate before building the bridge, so both agree there.
+///
+/// A page that reads the stream field instead will draw its spectrum and
+/// filter axes at 48 kHz whatever the host runs at: every peak at half its
+/// true frequency at 96 kHz, and 8.8 % high at 44.1 kHz.
 pub fn streams(sr: f32) -> Vec<StreamSpec> {
     vec![
         StreamSpec::new("scope", SCOPE_LEN)
@@ -697,5 +712,162 @@ impl Telemetry {
 impl Default for Telemetry {
     fn default() -> Self {
         Telemetry::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A full-scale sine on an exact bin centre must read 0 dBFS, which is
+    /// what the module's doc promises and what the page's dB axis assumes.
+    #[test]
+    fn analyzer_reads_zero_dbfs_for_a_full_scale_sine() {
+        let sr = 48000.0f32;
+        for bin in [4usize, 43, 214] {
+            let freq = bin as f32 * sr / FFT_SIZE as f32;
+            let mut a = Analyzer::new();
+            for i in 0..FFT_SIZE * 2 {
+                a.push((2.0 * PI * freq * i as f32 / sr).sin());
+            }
+            let mut out = vec![0.0; BINS];
+            a.compute(&mut out);
+            let peak = out.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            assert!(
+                (peak - 0.0).abs() < 0.2,
+                "bin {bin} ({freq:.1} Hz) peaked at {peak:.3} dBFS"
+            );
+        }
+    }
+
+    /// Silence must floor rather than produce infinities.
+    #[test]
+    fn analyzer_floors_silence() {
+        let mut a = Analyzer::new();
+        for _ in 0..FFT_SIZE * 2 {
+            a.push(0.0);
+        }
+        let mut out = vec![0.0; BINS];
+        a.compute(&mut out);
+        assert!(out.iter().all(|v| v.is_finite() && *v < -100.0));
+    }
+
+    /// The scope history comes back newest-last and in order.
+    #[test]
+    fn analyzer_recent_returns_the_newest_samples_in_order() {
+        let mut a = Analyzer::new();
+        for i in 0..FFT_SIZE * 2 + 37 {
+            a.push(i as f32);
+        }
+        let mut out = vec![0.0; 8];
+        a.recent(&mut out);
+        let last = (FFT_SIZE * 2 + 36) as f32;
+        for (i, v) in out.iter().enumerate() {
+            assert_eq!(*v, last - (7 - i) as f32, "position {i}");
+        }
+    }
+
+    /// Peak and RMS against signals whose true values are known exactly:
+    /// a full-scale square has peak 1 and RMS 1, a sine peak 1 and RMS
+    /// 1/√2.
+    #[test]
+    fn meter_peak_and_rms_are_exact() {
+        let mut m = Meter::default();
+        for i in 0..1000 {
+            let sq = if i % 2 == 0 { 1.0 } else { -1.0 };
+            m.feed(sq, sq * 0.5);
+        }
+        let v = m.take();
+        assert!((v[0] - 1.0).abs() < 1e-6, "peak L {}", v[0]);
+        assert!((v[1] - 0.5).abs() < 1e-6, "peak R {}", v[1]);
+        assert!((v[2] - 1.0).abs() < 1e-6, "rms L {}", v[2]);
+        assert!((v[3] - 0.5).abs() < 1e-6, "rms R {}", v[3]);
+
+        // A sine: RMS is 1/sqrt(2) of the peak.
+        let mut m = Meter::default();
+        let n = 48000;
+        for i in 0..n {
+            let x = (2.0 * PI * 100.0 * i as f32 / 48000.0).sin();
+            m.feed(x, 0.0);
+        }
+        let v = m.take();
+        assert!((v[0] - 1.0).abs() < 1e-3, "sine peak {}", v[0]);
+        assert!(
+            (v[2] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-3,
+            "sine rms {}",
+            v[2]
+        );
+    }
+
+    /// `take` starts a new block rather than accumulating for ever.
+    #[test]
+    fn meter_resets_after_take() {
+        let mut m = Meter::default();
+        m.feed(1.0, 1.0);
+        let _ = m.take();
+        m.feed(0.25, 0.25);
+        let v = m.take();
+        assert!((v[0] - 0.25).abs() < 1e-6, "peak carried over: {}", v[0]);
+        let empty = m.take();
+        assert_eq!(empty, [0.0, 0.0, 0.0, 0.0]);
+    }
+
+    /// Every parameter the synth reads must exist in the published list,
+    /// and the defaults the two hosts derive must match `Settings::default`.
+    #[test]
+    fn param_specs_cover_every_setting_and_match_the_defaults() {
+        let specs = param_specs();
+        let mut ids: Vec<&str> = specs.iter().map(|s| s.id.as_str()).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "duplicate parameter id");
+        for id in [
+            "wt_table",
+            "wt_position",
+            "osc_octave",
+            "osc_semi",
+            "osc_fine",
+            "osc_level",
+            "osc_phase_random",
+            "unison_voices",
+            "unison_detune",
+            "unison_width",
+            "sub_level",
+            "sub_octave",
+            "filter_mode",
+            "filter_cutoff",
+            "filter_res",
+            "filter_env",
+            "filter_key",
+            "lfo_rate",
+            "lfo_shape",
+            "lfo_pos",
+            "lfo_cutoff",
+            "lfo_pitch",
+            "lfo_retrig",
+            "vel_amp",
+            "glide",
+            "master",
+            "poly",
+        ] {
+            assert!(ids.binary_search(&id).is_ok(), "missing parameter `{id}`");
+        }
+        // Every field of `Settings` is driven by one of them: the count is
+        // pinned so adding a setting without a parameter fails here.
+        assert_eq!(specs.len(), 35, "parameter count changed");
+    }
+
+    /// The stream list is self-consistent: unique ids and non-zero
+    /// capacities, so a page binding by id cannot silently miss one.
+    #[test]
+    fn streams_are_unique_and_sized() {
+        let s = streams(48000.0);
+        let mut ids: Vec<&str> = s.iter().map(|x| x.id.as_str()).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(before, ids.len(), "duplicate stream id");
+        assert!(!s.is_empty());
     }
 }

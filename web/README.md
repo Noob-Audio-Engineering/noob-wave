@@ -69,8 +69,26 @@ the full plug-in build steps.
 5. The **UI store** (`client.store`) holds the user presets under
    `presets.user`, persisted with the plug-in state and shared by every
    window of the instance.
-6. Messages: the page can send `reset`; the host sends `status` once a
-   second and `sample_rate` on initialise.
+6. Messages: the page sends `reset` (the header's Reset button, which walks
+   every parameter back to its default in the synth), and `resize` /
+   `fullscreen` through `useWindow()`; the host sends `status` once a second
+   and `sample_rate` on initialise.
+
+The window is resizable from 1000 × 620 up: drag the grip in the
+bottom-right corner, or use the header's ⛶ button for the whole monitor.
+That floor is measured rather than chosen: below it the oscillator panel's
+buttons start to overlap the envelope knobs beneath them.
+Both go through the page's single `useWindowSize` instance (`useWindow()`
+in `composables/useSynth.js`), and the adapter remembers the size with the
+plug-in state, so the editor reopens where you left it. In a browser tab
+the grip renders nothing and the page follows the tab.
+
+Anything drawn on a frequency axis — the filter curve and the spectrum
+analyser — takes the host's real rate from `useSampleRate(streamId?)`,
+which prefers the named stream's own `meta.sample_rate`, then the `status`
+message, then `manifest.meta.sample_rate`, and only then 48 kHz. The chain
+matters because a plug-in builds its stream list before it knows what the
+host is running at, so a rate baked in at construction can be stale.
 
 Parameter ids by group: `wt_table`, `wt_position`, `osc_octave`,
 `osc_semi`, `osc_fine`, `unison_voices`, `unison_detune`, `unison_width`,
@@ -83,8 +101,8 @@ Parameter ids by group: `wt_table`, `wt_position`, `osc_octave`,
 ## Component tree
 
 ```
-App.vue                     3 × 2 panel grid, stream subscriptions shared through `ui`, undo / redo keys
-├── Header.vue              connection dot, undo / redo / A-B, preset menu (factory, user, Save As), voices, edit→echo, sample rate
+App.vue                     3 × 2 panel grid, stream subscriptions shared through `ui`, undo / redo keys, resize grip
+├── Header.vue              connection dot, undo / redo / A-B, preset menu (factory, user, Save As), reset, fullscreen, voices, edit→echo, sample rate
 ├── WavetablePanel.vue      wavetable stack with the live frame, table selector, position / level / sub / pitch / unison knobs
 ├── FilterPanel.vue         mode buttons, response curve computed in the browser, cutoff / reso / env / key knobs
 ├── ScopePanel.vue          oscilloscope and spectrum of the output
@@ -93,7 +111,7 @@ App.vue                     3 × 2 panel grid, stream subscriptions shared throu
 ├── MasterPanel.vue         velocity / glide / voices / master knobs, voice activity strip, output meter
 ├── KeyboardBar.vue         octave buttons, the on-screen keyboard, legend
 ├── Section.vue             the card frame every panel uses (title, accent dot, `tools` slot)
-└── (from @noob-audio-engineering/noob-vst-webgui-framework/vue) Knob, ContextMenu, LevelMeter
+└── (from @noob-audio-engineering/noob-vst-webgui-framework/vue) Knob, ContextMenu, LevelMeter, ResizeGrip
 ```
 
 Every component starts with a doc block listing its props, emits, the
@@ -107,6 +125,8 @@ parameters and streams it touches and any drawing or performance trick.
 | `useSynth()` | Every handle grouped as `osc`, `filter`, `amp`, `filt`, `lfo`, `global`. Built once, needs the manifest. |
 | `allPresets()` / `loadPreset(i)` / `savePresetAs(name)` | Factory + user presets, wrap-around loading, saving into the store. |
 | `ui` | `preset { name, index }`, `octave`, and the latest `voices` / `modulation` frames. |
+| `useWindow()` | The page's one `useWindowSize`: `request`, `gripHandlers`, `fullscreen`, `toggleFullscreen`. Minimum `WINDOW_MIN`. |
+| `useSampleRate(streamId?)` | The host's real sample rate as a computed, for every frequency axis; prefers the named stream's metadata. |
 | re-exports | `useParam`, `hasParam`, `getClient`, `loadState`, `stateToJson` from `@noob-audio-engineering/noob-vst-webgui-framework/vue`. |
 
 Stream layouts used by the panels: `voices` is 32 floats, `[0..16)` the
@@ -156,8 +176,10 @@ or subscribe once in `App.vue` and share it through `ui` as `voices` and
 ## Keyboard and mouse
 
 Undo / redo Ctrl+Z / Ctrl+Y, A/B Ctrl+B. Play with the mouse or touch on
-the keyboard, or with the computer keys A W S E D F T G Y H U J K (a
-chromatic octave from C), Z / X shift the octave. Drag or scroll the
+the keyboard, or with the computer keys `a s d f g h j k l ; '` (white) and
+`w e t y u o p` (black), where `a` is the keyboard's lowest visible C.
+`z` / `x` shift the octave, and so do the `− oct` / `+ oct` buttons: both
+move the drawn keys and the letter keys together. Drag or scroll the
 wavetable view to morph, drag the envelope handles, double-click a knob to
 type a value, Ctrl+click a knob to reset it.
 

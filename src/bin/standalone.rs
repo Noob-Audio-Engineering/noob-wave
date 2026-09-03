@@ -163,6 +163,16 @@ fn write_interleaved<T: cpal::Sample + cpal::FromSample<f32>>(
 /// start-up, when a failed `play()` takes the engine back out, and an
 /// uncontended `try_lock` costs a few nanoseconds. If the callback does
 /// find the lock taken it outputs one buffer of silence.
+/// The default output device's sample rate, or `None` if there is no
+/// device. Asked before the bridge is built so the manifest can carry the
+/// real rate rather than a placeholder.
+fn default_output_rate() -> Option<f32> {
+    let host = cpal::default_host();
+    let device = host.default_output_device()?;
+    let config = device.default_output_config().ok()?;
+    Some(config.sample_rate().0 as f32)
+}
+
 // The engine is handed back on failure on purpose, so the caller can run it silently.
 #[allow(clippy::result_large_err)]
 fn start_audio(mut engine: Engine, want_sr: &mut f32) -> Result<cpal::Stream, Engine> {
@@ -285,7 +295,19 @@ fn main() {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "--port" | "-p" => port = args.next().and_then(|v| v.parse().ok()),
+            "--port" | "-p" => {
+                // A typo must not look like "flag not given", which would
+                // quietly fall back to probing for a free port while the
+                // documentation promises this insists on the one asked for.
+                let raw = args.next().unwrap_or_default();
+                match raw.parse() {
+                    Ok(v) => port = Some(v),
+                    Err(_) => {
+                        eprintln!("--port needs a number, got `{raw}`");
+                        std::process::exit(2);
+                    }
+                }
+            }
             "--open" | "-o" => open = true,
             "--silent" => silent = true,
             "--dir" | "-d" => dir = args.next().map(PathBuf::from),
@@ -308,7 +330,13 @@ fn main() {
 
     // Bridge and engine. The synth builds its wavetables here, on the main
     // thread, before anything real-time starts.
-    let mut sr = 48_000.0f32;
+    //
+    // The device's rate has to be known *before* the bridge is built: the
+    // manifest carries it, and the page uses it to label the spectrum and
+    // filter axes. `start_audio` asks the same question again and gets the
+    // same answer, so the two cannot disagree; if there is no device we
+    // keep the 48 kHz default and run silently anyway.
+    let mut sr = default_output_rate().unwrap_or(48_000.0);
     let (bridge, ix) = dsp::build_bridge("noob-wave", sr);
     let audio = bridge.take_audio().expect("audio handle");
     let blocks = Arc::new(AtomicU64::new(0));

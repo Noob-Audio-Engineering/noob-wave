@@ -10,11 +10,63 @@
  * (App.vue renders the panels under `v-if="ready"`). Handles are created
  * once and cached, so every panel shares the same reactive objects.
  */
-import { reactive } from 'vue';
-import { getClient, hasParam, loadState, stateToJson, useParam, useNoobVstWebguiFramework } from '@noob-audio-engineering/noob-vst-webgui-framework/vue';
+import { computed, reactive } from 'vue';
+import { getClient, hasParam, loadState, stateToJson, useParam, useNoobVstWebguiFramework, useWindowSize } from '@noob-audio-engineering/noob-vst-webgui-framework/vue';
 import { FACTORY_PRESETS, loadUserPresets, saveUserPresets } from '../presets.js';
 
 export { useNoobVstWebguiFramework, useParam, hasParam, getClient, loadState, stateToJson };
+
+/**
+ * Smallest editor the panels stay clear of one another in, as
+ * `[width, height]`. Measured, not guessed: below about 1000 × 620 the
+ * oscillator panel's buttons start to overlap the envelope knobs in the row
+ * beneath, so that is the floor rather than the smallest size the window
+ * technically allows.
+ */
+export const WINDOW_MIN = [1000, 620];
+
+let win = null;
+
+/**
+ * The page's one `useWindowSize` instance: the resize grip in `App.vue`,
+ * the header's fullscreen button and anything else that cares all share it,
+ * so there is a single set of viewport listeners and a single coalesced
+ * `resize` request per frame. No aspect lock; the panel grid is fractional
+ * and takes whatever shape the window has.
+ */
+export function useWindow() {
+  win ??= useWindowSize({ min: WINDOW_MIN });
+  return win;
+}
+
+let sampleRate = null;
+
+/**
+ * The host's real sample rate, for anything the page draws on a frequency
+ * axis: the `status` message first, then `manifest.meta.sample_rate`, then
+ * 48 kHz until either arrives.
+ *
+ * Both of those are live. `status` carries the rate every second, and the
+ * framework folds the `sample_rate` message the plug-in sends at
+ * initialisation into the manifest meta. `status` comes first because the
+ * standalone builds its bridge before the audio device has been opened, so
+ * its manifest meta can still hold the placeholder while `status` is right.
+ *
+ * What this must never read is a **stream's** own `meta.sample_rate`. That
+ * looks like the more specific answer and is a trap: nih-plug builds the
+ * manifest, stream metadata included, in `Default::default()`, which runs
+ * before `initialize` learns the rate, and nothing can amend it afterwards,
+ * so it says 48000 for ever. Believing it puts every analyser peak at half
+ * its true frequency at 96 kHz and 8.8 % high at 44.1 kHz. The framework's
+ * canvas components read that field by default, which is why the ones this
+ * page uses are given the rate explicitly.
+ */
+export function useSampleRate() {
+  if (sampleRate) return sampleRate;
+  const { manifest, status } = useNoobVstWebguiFramework();
+  sampleRate = computed(() => status.value?.sample_rate || manifest.value?.meta?.sample_rate || 48000);
+  return sampleRate;
+}
 
 let groups = null;
 

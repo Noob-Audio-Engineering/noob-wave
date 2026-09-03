@@ -1,9 +1,15 @@
 <script setup>
 /**
- * Noob-Wave root component: a header, a fixed 3 × 2 grid of panels
- * (oscillator, filter, output / oscillator, envelopes, LFO, global) and the
- * on-screen keyboard along the bottom. Sized for the plug-in's default
- * 1080 × 640 editor; the grid uses fractions, so it scales with the window.
+ * Noob-Wave root component: a header, a 3 × 2 grid of panels (wavetable,
+ * filter, output on the first row; envelopes, LFO, global on the second)
+ * and the on-screen keyboard along the bottom. The grid uses fractions, so
+ * it scales with the window in both directions.
+ *
+ * The window itself is resizable: the grip in the bottom-right corner drags
+ * the editor from `WINDOW_MIN` up, and the header's fullscreen button asks
+ * the host for the monitor's work area, both through the one
+ * `useWindowSize` instance in `useWindow()`. In a browser tab the grip
+ * renders nothing and the page simply follows the tab.
  *
  * Nothing but a "connecting…" placeholder renders until `ready` is true,
  * because every panel asks for parameter handles, which need the manifest.
@@ -21,8 +27,8 @@
  * KeyboardBar.vue.
  */
 import { onBeforeUnmount, onMounted } from 'vue';
-import { useStream } from '@noob-audio-engineering/noob-vst-webgui-framework/vue';
-import { ui, useNoobVstWebguiFramework } from './composables/useSynth.js';
+import { ResizeGrip, useStream } from '@noob-audio-engineering/noob-vst-webgui-framework/vue';
+import { WINDOW_MIN, ui, useNoobVstWebguiFramework, useWindow } from './composables/useSynth.js';
 import Header from './components/Header.vue';
 import WavetablePanel from './components/WavetablePanel.vue';
 import FilterPanel from './components/FilterPanel.vue';
@@ -33,6 +39,9 @@ import ScopePanel from './components/ScopePanel.vue';
 import KeyboardBar from './components/KeyboardBar.vue';
 
 const { ready, connected, client, history } = useNoobVstWebguiFramework();
+// Created here so its viewport listeners live as long as the page; the
+// header's fullscreen button and the grip share this one instance.
+useWindow();
 let offs = [];
 
 function onKey(e) {
@@ -71,7 +80,7 @@ onBeforeUnmount(() => {
     <template v-if="ready">
       <Header />
       <main class="flex-1 min-h-0 grid gap-2 p-2" style="grid-template-columns: 1.5fr 1fr 1fr; grid-template-rows: 1fr 1fr">
-        <WavetablePanel class="row-span-1" />
+        <WavetablePanel />
         <FilterPanel />
         <ScopePanel />
         <EnvPanel />
@@ -79,6 +88,7 @@ onBeforeUnmount(() => {
         <MasterPanel />
       </main>
       <KeyboardBar />
+      <ResizeGrip class="wave-grip" :min="WINDOW_MIN" title="Drag to resize the window" />
     </template>
     <div v-else class="flex-1 grid place-items-center text-slate-500 text-sm">
       <div class="text-center">

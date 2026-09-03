@@ -17,6 +17,11 @@
  * The framework `WavetableView` owns the canvas and the drag / wheel
  * gesture on it, which edits `wt_position` directly (it receives the raw
  * `param` object, not the Vue handle). No props or emits.
+ *
+ * The knob column is taller than this panel's grid cell in a short window,
+ * so it scrolls; without that the third row and the two buttons are simply
+ * cut off and unreachable, which they were at every size up to about
+ * 1000 × 760, the editor's 1080 × 640 default included.
  */
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { WavetableView } from '@noob-audio-engineering/noob-vst-webgui-framework/components';
@@ -54,7 +59,13 @@ onBeforeUnmount(() => {
     </template>
     <div class="h-full flex gap-3">
       <div ref="el" class="flex-1 min-w-0 rounded-lg bg-ink-950/70 border border-white/[0.05]" title="Drag vertically or scroll to morph"></div>
-      <div class="shrink-0 grid grid-cols-3 gap-x-2 gap-y-1 content-start">
+      <!--
+        The three knob rows and the buttons need more height than this cell
+        gets in a short window, so the column scrolls rather than clipping
+        its last row: Unison, Detune, Width and both buttons stay reachable
+        at every window size, including the editor's own default.
+      -->
+      <div class="shrink-0 min-h-0 overflow-y-auto grid grid-cols-3 gap-x-2 gap-y-1 content-start">
         <Knob :p="s.osc.position" :size="54" label="Position" />
         <Knob :p="s.osc.level" :size="54" label="Level" />
         <Knob :p="s.osc.subLevel" :size="54" label="Sub" color="#58c4ff" />

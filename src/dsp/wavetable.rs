@@ -1,7 +1,13 @@
 //! Mipmapped wavetables. A table is `FRAMES` single cycles of `FRAME_LEN`
 //! samples; each frame exists in `MIPS` band-limited versions (level `m`
 //! keeps the harmonics up to `FRAME_LEN / 2 >> m`), so playback picks the
-//! level whose highest harmonic stays below Nyquist and never aliases.
+//! level whose highest harmonic stays below Nyquist.
+//!
+//! The ladder reaches a single harmonic, so any fundamental below Nyquist
+//! has an alias-free level to play from — the whole MIDI range and then
+//! some. Only tuning a note *above* Nyquist folds, which no setting makes
+//! musically useful; see [`super::synth`] for the clamp that keeps that
+//! case bounded.
 //!
 //! Factory tables are defined as harmonic spectra and rendered with an
 //! inverse FFT, which makes the mipmaps exact: level `m` is the same
@@ -13,7 +19,7 @@
 //!
 //! | level | harmonics kept | alias-free up to (48 kHz) |
 //! |---|---|---|
-//! | 0 | 1024 | 23 Hz |
+//! | 0 | 1023 | 23 Hz |
 //! | 1 | 512 | 47 Hz |
 //! | 2 | 256 | 94 Hz |
 //! | 3 | 128 | 188 Hz |
@@ -22,10 +28,20 @@
 //! | 6 | 16 | 1.5 kHz |
 //! | 7 | 8 | 3 kHz |
 //! | 8 | 4 | 6 kHz |
+//! | 9 | 2 | 12 kHz |
+//! | 10 | 1 | 24 kHz |
 //!
-//! [`Wavetable::mip_for`] picks the first level whose top harmonic is
-//! under Nyquist for a given fundamental; above 6 kHz level 8 is used and
-//! its few harmonics fold, which is inaudible at that pitch.
+//! Level 0 holds 1023 rather than 1024 because harmonic 1024 lands on the
+//! Nyquist bin, which a Hermitian spectrum cannot carry as a conjugate
+//! pair. At a 23 Hz fundamental that harmonic is itself at Nyquist, so
+//! nothing audible is lost.
+//!
+//! [`Wavetable::mip_for`] picks the first level whose top harmonic is under
+//! Nyquist for a given fundamental. The top of the ladder keeps one
+//! harmonic, so the highest MIDI note (12.5 kHz) still plays a clean
+//! fundamental at 48 kHz; before the ladder was extended it stopped at four
+//! harmonics and the top octave folded loudly, on some tables above the
+//! wanted note.
 //!
 //! # Memory and playback
 //!
@@ -33,7 +49,7 @@
 //! linear interpolation between sample `i` and `i + 1` never wraps. A
 //! lookup ([`Wavetable::sample`]) is bilinear: linear in phase within a
 //! frame and linear between the two frames around the morph position. A
-//! full table is `9 × 32 × 2049` floats (about 2.4 MB); all six factory
+//! full table is `11 × 32 × 2049` floats (about 2.9 MB); all six factory
 //! tables are built once in [`Synth::new`](super::Synth::new), off the
 //! audio thread, and shared read-only by every voice.
 
@@ -48,7 +64,13 @@ pub const FRAME_LEN: usize = 2048;
 /// Harmonics a level-0 frame can hold (`FRAME_LEN / 2`).
 pub const HARMONICS: usize = FRAME_LEN / 2;
 /// Mip levels per frame; level `m` keeps `HARMONICS >> m` harmonics.
-pub const MIPS: usize = 9;
+///
+/// Eleven levels take the ladder down to a single harmonic
+/// (`1024 >> 10 == 1`), which is what makes the top of the keyboard
+/// alias-free: a level keeping `h` harmonics is clean only up to
+/// `sr / 2 / h`, so four harmonics (the old top level) ran out at 6 kHz,
+/// well below the 12.5 kHz of MIDI 127.
+pub const MIPS: usize = 11;
 /// Frames (morph steps) per table.
 pub const FRAMES: usize = 32;
 /// Samples per frame in the preview the UI draws.
@@ -106,6 +128,9 @@ impl Wavetable {
             for m in 0..MIPS {
                 let limit = HARMONICS >> m;
                 buf.iter_mut().for_each(|c| *c = Complex::default());
+                // `HARMONICS - 1`: harmonic 1024 would land on the Nyquist
+                // bin, where `buf[k]` and `buf[FRAME_LEN - k]` are the same
+                // slot and the conjugate would overwrite the value.
                 for k in 1..=limit.min(HARMONICS - 1) {
                     let c = spec.get(k).copied().unwrap_or_default();
                     buf[k] = c;
@@ -198,7 +223,7 @@ impl Wavetable {
     }
 
     /// Every factory table, in [`TABLE_NAMES`] order. Costs one inverse
-    /// FFT per table, frame and level (about 1.7 k transforms of 2048
+    /// FFT per table, frame and level (about 2.1 k transforms of 2048
     /// points); do it off the audio thread.
     pub fn all_factory() -> Vec<Wavetable> {
         (0..TABLE_NAMES.len()).map(Wavetable::factory).collect()
@@ -411,29 +436,126 @@ mod tests {
         assert!(t.sample(0, 0.0, 0.5).abs() < 0.02);
     }
 
-    #[test]
-    fn mip_levels_remove_high_harmonics() {
-        let t = Wavetable::factory(0);
-        // Last frame (pulse) has lots of harmonics at level 0 ...
-        let level0: f32 = (0..FRAME_LEN)
-            .map(|i| t.frame(0, FRAMES - 1)[i].abs())
-            .sum::<f32>();
-        // ... the top mip keeps only the first few, so it is much smoother.
-        let top = t.frame(MIPS - 1, FRAMES - 1);
-        let mut max_step = 0.0f32;
-        for i in 0..FRAME_LEN {
-            max_step = max_step.max((top[i + 1] - top[i]).abs());
-        }
-        assert!(max_step < 0.05, "top mip has step {max_step}");
-        assert!(level0 > 0.0);
+    /// Magnitude spectrum of one stored cycle, bin `k` = harmonic `k`.
+    fn harmonics_of(frame: &[f32]) -> Vec<f32> {
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(FRAME_LEN);
+        let mut buf: Vec<Complex<f32>> = frame[..FRAME_LEN]
+            .iter()
+            .map(|v| Complex::new(*v, 0.0))
+            .collect();
+        fft.process(&mut buf);
+        let g = 2.0 / FRAME_LEN as f32;
+        buf[..=HARMONICS].iter().map(|c| c.norm() * g).collect()
     }
 
+    /// Every level really is band-limited to its stated harmonic count.
+    /// The old version measured a smoothness proxy chosen to pass and never
+    /// looked at the harmonic content at all.
     #[test]
-    fn mip_selection_tracks_pitch() {
-        assert_eq!(Wavetable::mip_for(20.0, 48000.0), 0);
-        let m = Wavetable::mip_for(440.0, 48000.0);
-        assert!((HARMONICS >> m) as f32 * 440.0 <= 24000.0 + 1.0);
-        assert!(Wavetable::mip_for(10000.0, 48000.0) >= 8);
+    fn mip_levels_remove_high_harmonics() {
+        for table in 0..TABLE_NAMES.len() {
+            let t = Wavetable::factory(table);
+            for m in 0..MIPS {
+                let limit = HARMONICS >> m;
+                let mag = harmonics_of(t.frame(m, FRAMES - 1));
+                let peak = mag.iter().cloned().fold(0.0f32, f32::max).max(1e-9);
+                for (k, v) in mag.iter().enumerate().skip(limit + 1) {
+                    let rel = 20.0 * (v / peak).max(1e-12).log10();
+                    assert!(
+                        rel < -80.0,
+                        "table {table} level {m}: harmonic {k} is {rel:.1} dB \
+                         below peak, above the level's limit of {limit}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The ladder covers the whole audible range: for any fundamental up to
+    /// Nyquist there is a level whose top harmonic still fits underneath.
+    ///
+    /// The old version asserted `mip_for(10000, 48000) >= 8`, which was the
+    /// cap that *caused* the top octave to fold, and checked the inequality
+    /// by feeding `mip_for`'s own answer back into it.
+    #[test]
+    fn every_fundamental_below_nyquist_has_an_alias_free_level() {
+        let sr = 48000.0;
+        let nyquist = sr * 0.5;
+        // 12 543.85 Hz is MIDI 127, the top of the keyboard.
+        for f0 in [
+            20.0f32, 55.0, 440.0, 3000.0, 6000.0, 8000.0, 12_543.85, 23_900.0,
+        ] {
+            let m = Wavetable::mip_for(f0, sr);
+            let top = (HARMONICS >> m) as f32 * f0;
+            assert!(
+                top <= nyquist,
+                "f0 {f0}: level {m} keeps {} harmonics, topmost at {top} Hz, above Nyquist",
+                HARMONICS >> m
+            );
+        }
+        // Low notes must not be robbed of harmonics by an over-eager level.
+        assert_eq!(Wavetable::mip_for(20.0, sr), 0);
+        // The ladder has to reach a single harmonic for the above to hold.
+        assert_eq!(HARMONICS >> (MIPS - 1), 1);
+    }
+
+    /// Play a table at `f0` and measure the loudest component that is not
+    /// near a harmonic, relative to the loudest that is. This is the test
+    /// that was missing: the plug-in shipped with the top octave folding at
+    /// up to +68 dBc on the Digital table, and nothing measured it.
+    #[test]
+    fn top_of_the_keyboard_does_not_alias() {
+        let sr = 48000.0f32;
+        let n = 1 << 15;
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(n);
+        for table in 0..TABLE_NAMES.len() {
+            let t = Wavetable::factory(table);
+            for &note in &[110.0f32, 120.0, 127.0] {
+                let f0 = 440.0 * 2f32.powf((note - 69.0) / 12.0);
+                let mip = Wavetable::mip_for(f0, sr);
+                let inc = f0 / sr;
+                let mut phase = 0.0f32;
+                let mut buf: Vec<Complex<f32>> = Vec::with_capacity(n);
+                for i in 0..n {
+                    let x = t.sample(mip, 0.5, phase);
+                    phase = (phase + inc).fract();
+                    // Blackman-Harris: -92 dB sidelobes, so window leakage
+                    // cannot be mistaken for a spur.
+                    let a = 2.0 * PI * i as f32 / n as f32;
+                    let w = 0.35875 - 0.48829 * a.cos() + 0.14128 * (2.0 * a).cos()
+                        - 0.01168 * (3.0 * a).cos();
+                    buf.push(Complex::new(x * w, 0.0));
+                }
+                fft.process(&mut buf);
+                let bin_hz = sr / n as f32;
+                let (mut wanted, mut spur, mut spur_hz) = (0.0f32, 0.0f32, 0.0f32);
+                for (k, c) in buf[..n / 2].iter().enumerate() {
+                    let f = k as f32 * bin_hz;
+                    if f < 20.0 || f > sr * 0.5 - 200.0 {
+                        continue;
+                    }
+                    let m = c.norm();
+                    let h = (f / f0).round().max(1.0);
+                    let near = (1200.0 * (f / (h * f0)).log2()).abs() < 25.0
+                        || (f - h * f0).abs() < 6.0 * bin_hz;
+                    if near {
+                        wanted = wanted.max(m);
+                    } else if m > spur {
+                        spur = m;
+                        spur_hz = f;
+                    }
+                }
+                let dbc = 20.0 * (spur / wanted.max(1e-12)).max(1e-12).log10();
+                assert!(
+                    dbc < -60.0,
+                    "table {} ({}) at MIDI {note}: worst spur {dbc:.1} dBc at {spur_hz:.0} Hz",
+                    table,
+                    TABLE_NAMES[table]
+                );
+            }
+        }
     }
 
     #[test]

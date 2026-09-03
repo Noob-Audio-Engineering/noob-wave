@@ -587,8 +587,22 @@ impl Default for NoobWave {
         let (editor, bridge) = NoobVstWebguiFrameworkEditor::with_builder(
             "Noob-Wave",
             params.as_ref(),
+            // The host does not tell us the rate until `initialize`, which
+            // runs after this. `initialize` sends the real one and the
+            // framework applies it to `manifest.meta.sample_rate`, which is
+            // the field the page must read; see `dsp::streams`.
             dsp::streams(48_000.0),
-            EditorConfig::new(1080, 640).assets(Assets::Lookup(ui_lookup)),
+            // 1180 x 760, not the old 1080 x 640: at that height the
+            // oscillator panel's knob column was cut off by 73 pixels, so
+            // Unison, Detune, Width and two buttons were unreachable in a
+            // freshly opened editor. The page scrolls the column now, but a
+            // default that hides its own controls is still the wrong
+            // default. The measured floor is 1000 x 620, below which the
+            // oscillator buttons overlap the envelope knobs, so that is the
+            // minimum and the default sits clear of it.
+            EditorConfig::new(1180, 760)
+                .size_limits((1000, 620), (3840, 2400))
+                .assets(Assets::Lookup(ui_lookup)),
             |b| {
                 b.meta(serde_json::json!({
                     "vendor": "Noob Audio Engineering",
@@ -777,7 +791,7 @@ impl Vst3Plugin for NoobWave {
 impl ClapPlugin for NoobWave {
     const CLAP_ID: &'static str = "io.github.noob-audio-engineering.noob-wave";
     const CLAP_DESCRIPTION: Option<&'static str> =
-        Some("Simple wavetable synth with a web-view editor over bridge");
+        Some("Wavetable synth whose editor is a web page over a local bridge");
     const CLAP_MANUAL_URL: Option<&'static str> = None;
     const CLAP_SUPPORT_URL: Option<&'static str> = None;
     const CLAP_FEATURES: &'static [ClapFeature] = &[

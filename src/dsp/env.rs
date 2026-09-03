@@ -14,6 +14,15 @@
 //!    decay releases from that level, no jump), and becomes idle below
 //!    `1e-4`.
 //!
+//! # Release time and the voice slot
+//!
+//! `release_s` is the time to fall within about 0.7 % of zero, not the time
+//! to reach the `1e-4` idle threshold: that takes roughly **1.7×** longer,
+//! and a voice only frees its slot once it is idle. A 10 second release
+//! therefore occupies a slot for about 17 seconds, which matters when
+//! `poly` is low. The gap buys an inaudible tail rather than a click, so it
+//! is deliberate, but it is not what the dial says.
+//!
 //! [`Adsr::reset`] drops to idle at 0 immediately; the synth calls it
 //! before `note_on` on a stolen voice, so a steal restarts from silence.
 //! Everything is per-sample state with precomputed coefficients;

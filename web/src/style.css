@@ -75,3 +75,34 @@ body {
 .tabular {
   font-variant-numeric: tabular-nums;
 }
+
+/*
+ * The window resize grip: the framework's `ResizeGrip` is unstyled beyond
+ * its class, so the ridged corner and the accent it takes on while dragging
+ * belong here. It renders nothing in a browser tab, where the page follows
+ * the tab instead.
+ */
+.wave-grip {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  z-index: 20;
+  touch-action: none;
+  background: linear-gradient(
+    135deg,
+    transparent 0 55%,
+    rgba(226, 232, 240, 0.3) 55% 60%,
+    transparent 60% 70%,
+    rgba(226, 232, 240, 0.3) 70% 75%,
+    transparent 75% 85%,
+    rgba(226, 232, 240, 0.3) 85% 90%,
+    transparent 90%
+  );
+}
+.wave-grip:hover,
+.wave-grip.is-dragging {
+  background-color: rgba(255, 138, 61, 0.18); /* --color-accent */
+}

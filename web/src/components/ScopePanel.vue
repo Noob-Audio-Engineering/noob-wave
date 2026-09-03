@@ -9,19 +9,48 @@
  * 3 dB/oct tilt and 200 ms fall-off). The components subscribe and
  * unsubscribe themselves, so nothing is sent for this panel once it is
  * destroyed. No parameters, props or emits.
+ *
+ * The analyser is given the host's real sample rate explicitly, from
+ * `useSampleRate()`. Left to itself it would read the `spectrum` stream's
+ * own `meta.sample_rate`, which is fixed at 48000 when the plug-in builds
+ * its manifest and can never be corrected, so every peak would land at the
+ * wrong frequency in a session at any other rate. The component reads the
+ * rate once, in its constructor, so it is rebuilt when the rate changes.
  */
-import { onBeforeUnmount, onMounted, ref } from 'vue';
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Scope, Spectrum } from '@noob-audio-engineering/noob-vst-webgui-framework/components';
 import { useStream } from '@noob-audio-engineering/noob-vst-webgui-framework/vue';
+import { useSampleRate } from '../composables/useSynth.js';
 import Section from './Section.vue';
 
 const scopeEl = ref(null);
 const specEl = ref(null);
+const sampleRate = useSampleRate();
 let scope = null;
 let spec = null;
+
+function buildSpectrum() {
+  spec?.destroy();
+  const sr = sampleRate.value;
+  spec = new Spectrum(specEl.value, useStream('spectrum'), {
+    sampleRate: sr,
+    minHz: 20,
+    maxHz: Math.min(20000, sr * 0.5),
+    minDb: -90,
+    maxDb: 6,
+    slopeDbPerOct: 3,
+    color: 'rgba(88,196,255,0.85)',
+    fillColor: 'rgba(88,196,255,0.14)',
+    grid: true,
+    releaseMs: 200,
+  });
+}
 onMounted(() => {
   scope = new Scope(scopeEl.value, useStream('scope'), { colors: ['#ff8a3d'], fill: true, lineWidth: 1.5 });
-  spec = new Spectrum(specEl.value, useStream('spectrum'), { minHz: 20, maxHz: 20000, minDb: -90, maxDb: 6, slopeDbPerOct: 3, color: 'rgba(88,196,255,0.85)', fillColor: 'rgba(88,196,255,0.14)', grid: true, releaseMs: 200 });
+  buildSpectrum();
+});
+watch(sampleRate, () => {
+  if (specEl.value) buildSpectrum();
 });
 onBeforeUnmount(() => {
   scope?.destroy();

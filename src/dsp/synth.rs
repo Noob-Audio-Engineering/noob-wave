@@ -265,6 +265,19 @@ fn midi_to_hz(note: f32) -> f32 {
     440.0 * (2.0f32).powf((note - 69.0) / 12.0)
 }
 
+/// Highest oscillator frequency, as a fraction of the sample rate.
+///
+/// The tuning controls stack: ±3 octaves, ±12 semitones, ±100 cents, ±12
+/// semitones of pitch LFO and ±2 of bend all add to the note, so a high key
+/// with everything at maximum asks for a fundamental far above the sample
+/// rate. Nothing up there is musically useful — the output is fold-down
+/// whatever we do — but leaving it unclamped let the phase increment exceed
+/// one, and an `f32` accumulator advancing by more than a cycle per sample
+/// loses its fractional bits and eventually freezes, silencing the voice
+/// for good while it still holds its slot. Clamping just under Nyquist
+/// keeps the increment below one and the voice alive and merely wrong.
+const MAX_PITCH_RATIO: f32 = 0.499;
+
 impl Synth {
     /// Builds every factory wavetable; do this off the audio thread. Starts
     /// with [`Settings::default`] and no sounding voices.
@@ -541,8 +554,12 @@ impl Synth {
                     + s.fine / 100.0
                     + s.lfo_pitch * lfo
                     + self.pitch_bend;
-                let f0 = midi_to_hz(note);
-                v.mip = Wavetable::mip_for(f0 * (1.0 + s.detune / 1200.0), sr);
+                let f0 = midi_to_hz(note).clamp(1.0, sr * MAX_PITCH_RATIO);
+                // The mip level has to cover the highest unison voice, which
+                // sits at half the detune (see the `spread` below) and whose
+                // frequency ratio is `2^(cents/1200)`.
+                let top = f0 * (2.0f32).powf(s.detune * 0.5 / 1200.0);
+                v.mip = Wavetable::mip_for(top, sr);
                 for k in 0..unison {
                     let spread = if unison > 1 {
                         (2.0 * k as f32 / (unison - 1) as f32) - 1.0
@@ -579,21 +596,25 @@ impl Synth {
                     let mut osc_r = 0.0f32;
                     for k in 0..unison {
                         let x = table.sample(v.mip, position, v.phases[k]);
-                        v.phases[k] += v.incs[k];
-                        if v.phases[k] >= 1.0 {
-                            v.phases[k] -= 1.0;
-                        }
+                        // `fract` rather than one subtraction: a single
+                        // subtraction cannot bring an increment of a whole
+                        // cycle or more back into range, and the accumulator
+                        // then grows until it loses its fractional bits.
+                        v.phases[k] = (v.phases[k] + v.incs[k]).fract();
                         osc_l += x * v.pans[k].0;
                         osc_r += x * v.pans[k].1;
                     }
-                    let mut mono = (osc_l + osc_r) * 0.5 * unison_gain * s.osc_level;
-                    let side = (osc_l - osc_r) * 0.5 * unison_gain * s.osc_level;
+                    // `SQRT_2` calibrates the dB dial. The equal-power pan
+                    // puts a centred voice at 0.7071 in each channel, and
+                    // averaging them back to mid loses that 0.7071 again,
+                    // so without this the master dial read 3.01 dB below
+                    // its own label at every setting.
+                    let g = std::f32::consts::SQRT_2 * 0.5 * unison_gain * s.osc_level;
+                    let mut mono = (osc_l + osc_r) * g;
+                    let side = (osc_l - osc_r) * g;
                     if s.sub_level > 0.0 {
                         mono += (2.0 * std::f32::consts::PI * v.sub_phase).sin() * s.sub_level;
-                        v.sub_phase += v.sub_inc;
-                        if v.sub_phase >= 1.0 {
-                            v.sub_phase -= 1.0;
-                        }
+                        v.sub_phase = (v.sub_phase + v.sub_inc).fract();
                     }
                     let filtered = v.filter.process(mono);
                     let vel = 1.0 - s.vel_amp * (1.0 - v.velocity);
@@ -614,6 +635,7 @@ impl Synth {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     fn render_seconds(synth: &mut Synth, secs: f32) -> (Vec<f32>, Vec<f32>) {
         let n = (secs * 48000.0) as usize;
@@ -687,6 +709,187 @@ mod tests {
         let (l, r) = render_seconds(&mut s, 0.3);
         let diff: f32 = l.iter().zip(&r).map(|(a, b)| (a - b).abs()).sum::<f32>() / l.len() as f32;
         assert!(diff > 0.01, "{diff}");
+        // Width 0 must collapse to mono, which the old test never checked.
+        let mut s2 = Synth::new(48000.0);
+        st.width = 0.0;
+        s2.configure(&st);
+        s2.note_on(48, 1.0);
+        let (l2, r2) = render_seconds(&mut s2, 0.3);
+        let mono: f32 =
+            l2.iter().zip(&r2).map(|(a, b)| (a - b).abs()).sum::<f32>() / l2.len() as f32;
+        assert!(mono < 1e-6, "width 0 should be mono, channel diff {mono}");
+    }
+
+    /// The tuning controls stack high enough to ask for a fundamental far
+    /// above Nyquist. Nothing up there is musical, but the voice must stay
+    /// bounded and alive rather than freezing: an `f32` phase advanced by
+    /// more than a cycle per sample used to lose its fractional bits and
+    /// stick at a constant, silencing the voice for good while it still
+    /// held its slot.
+    #[test]
+    fn extreme_tuning_does_not_freeze_a_voice() {
+        let mut s = Synth::new(48000.0);
+        let mut st = Settings::default();
+        st.octave = 3;
+        st.semi = 12;
+        st.fine = 100.0;
+        st.lfo_pitch = 12.0;
+        st.phase_random = false;
+        s.configure(&st);
+        s.note_on(127, 1.0);
+        // Long enough that the old accumulator had frozen solid.
+        let (l, _) = render_seconds(&mut s, 30.0);
+        assert!(l.iter().all(|v| v.is_finite()));
+        let w = 4800;
+        let tail = &l[l.len() - w..];
+        let distinct = tail
+            .iter()
+            .map(|v| v.to_bits())
+            .collect::<HashSet<_>>()
+            .len();
+        assert!(
+            distinct > 100,
+            "voice froze: only {distinct} distinct sample values in the last 0.1 s"
+        );
+        assert_eq!(s.active_voices(), 1);
+    }
+
+    /// The sub oscillator sounds an octave (or two) below the note.
+    #[test]
+    fn sub_oscillator_tracks_the_note_an_octave_down() {
+        for (sub_octave, ratio) in [(1u8, 0.5f32), (2, 0.25)] {
+            let mut s = Synth::new(48000.0);
+            let mut st = Settings::default();
+            st.osc_level = 0.0;
+            st.sub_level = 1.0;
+            st.sub_octave = sub_octave;
+            st.cutoff = 20000.0;
+            st.filter_env = 0.0;
+            st.key_track = 0.0;
+            st.vel_amp = 0.0;
+            st.phase_random = false;
+            s.configure(&st);
+            s.note_on(69, 1.0); // 440 Hz
+            let (l, _) = render_seconds(&mut s, 0.5);
+            let tail = &l[l.len() / 2..];
+            let crossings = tail
+                .windows(2)
+                .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+                .count();
+            let want = (440.0 * ratio * 0.25) as usize;
+            assert!(
+                (crossings as i32 - want as i32).abs() <= 3,
+                "sub octave {sub_octave}: {crossings} crossings, expected about {want}"
+            );
+        }
+    }
+
+    /// Glide is linear in semitones and reaches the target in the stated
+    /// time; measured by where the pitch has got to half way through.
+    #[test]
+    fn glide_takes_the_stated_time() {
+        let mut s = Synth::new(48000.0);
+        let mut st = Settings::default();
+        st.glide_s = 0.5;
+        st.cutoff = 20000.0;
+        st.filter_env = 0.0;
+        st.key_track = 0.0;
+        st.vel_amp = 0.0;
+        st.phase_random = false;
+        s.configure(&st);
+        s.note_on(60, 1.0);
+        let _ = render_seconds(&mut s, 0.3);
+        s.note_on(72, 1.0); // an octave up, 0.5 s of glide
+        let _ = render_seconds(&mut s, 0.25); // half way: 6 semitones
+        let (l, _) = render_seconds(&mut s, 0.05);
+        let crossings = l.windows(2).filter(|w| w[0] <= 0.0 && w[1] > 0.0).count();
+        let hz = crossings as f32 / 0.05;
+        let want = 440.0 * 2f32.powf((66.0 - 69.0) / 12.0); // MIDI 66
+        assert!(
+            (hz / want - 1.0).abs() < 0.08,
+            "half way through a 0.5 s glide: {hz:.0} Hz, expected about {want:.0}"
+        );
+    }
+
+    /// Pitch bend of +2 semitones raises the pitch by that much.
+    #[test]
+    fn pitch_bend_moves_the_pitch_two_semitones() {
+        let mut s = Synth::new(48000.0);
+        let mut st = Settings::default();
+        st.cutoff = 20000.0;
+        st.filter_env = 0.0;
+        st.key_track = 0.0;
+        st.vel_amp = 0.0;
+        st.phase_random = false;
+        s.configure(&st);
+        s.set_pitch_bend(2.0);
+        s.note_on(69, 1.0);
+        let (l, _) = render_seconds(&mut s, 0.4);
+        let tail = &l[l.len() / 2..];
+        let secs = tail.len() as f32 / 48000.0;
+        let hz = tail
+            .windows(2)
+            .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
+            .count() as f32
+            / secs;
+        let want = 440.0 * 2f32.powf(2.0 / 12.0);
+        assert!(
+            (hz / want - 1.0).abs() < 0.02,
+            "bend +2 st: {hz:.1} Hz, expected {want:.1}"
+        );
+    }
+
+    /// Master gain is a dB dial: every 6 dB doubles the output, and the
+    /// label is absolute, not merely relative. A full-scale frame at unity
+    /// oscillator level and 0 dB master must peak at full scale; it used to
+    /// come out 3.01 dB shy because the pan law's centre attenuation was
+    /// never compensated.
+    #[test]
+    fn master_gain_is_in_decibels() {
+        let level = |db: f32| {
+            let mut s = Synth::new(48000.0);
+            let mut st = Settings::default();
+            st.master_db = db;
+            st.cutoff = 20000.0;
+            st.filter_env = 0.0;
+            st.key_track = 0.0;
+            st.vel_amp = 0.0;
+            st.phase_random = false;
+            s.configure(&st);
+            s.note_on(60, 1.0);
+            let (l, _) = render_seconds(&mut s, 0.3);
+            l.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+        };
+        let a = level(-12.0);
+        let b = level(-6.0);
+        let c = level(0.0);
+        assert!((b / a / 2.0 - 1.0).abs() < 0.05, "-12 to -6 dB: {a} -> {b}");
+        assert!((c / b / 2.0 - 1.0).abs() < 0.05, "-6 to 0 dB: {b} -> {c}");
+
+        // Absolute calibration: a full-scale sine frame, unity oscillator
+        // level, centred, 0 dB master.
+        let mut s = Synth::new(48000.0);
+        let mut st = Settings::default();
+        st.master_db = 0.0;
+        st.osc_level = 1.0;
+        st.width = 0.0;
+        st.cutoff = 20000.0;
+        st.filter_env = 0.0;
+        st.key_track = 0.0;
+        st.resonance = 0.0;
+        st.vel_amp = 0.0;
+        st.phase_random = false;
+        st.amp.sustain = 1.0;
+        st.amp.decay_s = 0.001;
+        s.configure(&st);
+        s.note_on(45, 1.0);
+        let (l, _) = render_seconds(&mut s, 0.5);
+        let peak = l[l.len() / 2..].iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(
+            (20.0 * peak.log10()).abs() < 0.6,
+            "0 dB master should peak near full scale, got {:.2} dBFS",
+            20.0 * peak.log10()
+        );
     }
 
     #[test]
@@ -705,6 +908,71 @@ mod tests {
         }
         let (l, r) = render_seconds(&mut s, 0.5);
         assert!(l.iter().chain(&r).all(|v| v.is_finite()));
-        assert!(l.iter().fold(0.0f32, |m, v| m.max(v.abs())) < 20.0);
+        // The old bound of 20.0 was 26 dB above anything this patch can
+        // produce, so it constrained nothing. Sixteen voices of seven
+        // detuned oscillators through a resonant filter peaks near 2; allow
+        // headroom for the resonant peak but not for a runaway.
+        let peak = l.iter().chain(&r).fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!((0.5..=6.0).contains(&peak), "peak {peak}");
+    }
+
+    /// Key tracking scales the cutoff with the note, pivoting at MIDI 60:
+    /// full tracking two octaves below quarters it, which removes most of
+    /// the output; the pivot note itself must not move at all.
+    #[test]
+    fn key_tracking_scales_the_cutoff_about_middle_c() {
+        // Energy above 1 kHz relative to the whole signal. Total RMS will
+        // not do: it is dominated by the fundamental, which passes at any
+        // of these cutoffs, so it barely moves when the filter closes.
+        let energy = |note: u8, key_track: f32| {
+            let mut s = Synth::new(48000.0);
+            let mut st = Settings::default();
+            st.cutoff = 2000.0;
+            st.filter_env = 0.0;
+            st.key_track = key_track;
+            st.position = 0.5; // a harmonically rich frame
+            st.vel_amp = 0.0;
+            st.phase_random = false;
+            s.configure(&st);
+            s.note_on(note, 1.0);
+            let (l, _) = render_seconds(&mut s, 0.4);
+            let n = 1 << 14;
+            let tail = &l[l.len() - n..];
+            let mut planner = rustfft::FftPlanner::<f32>::new();
+            let fft = planner.plan_fft_forward(n);
+            let mut buf: Vec<rustfft::num_complex::Complex<f32>> = tail
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let a = 2.0 * std::f32::consts::PI * i as f32 / n as f32;
+                    rustfft::num_complex::Complex::new(v * (0.5 - 0.5 * a.cos()), 0.0)
+                })
+                .collect();
+            fft.process(&mut buf);
+            let bin_hz = 48000.0 / n as f32;
+            let (mut hi, mut all) = (0.0f32, 0.0f32);
+            for (k, c) in buf[..n / 2].iter().enumerate() {
+                let p = c.norm_sqr();
+                all += p;
+                if k as f32 * bin_hz > 1000.0 {
+                    hi += p;
+                }
+            }
+            hi / all.max(1e-12)
+        };
+        // MIDI 60 is the pivot: tracking must not change it.
+        let pivot_off = energy(60, 0.0);
+        let pivot_on = energy(60, 1.0);
+        assert!(
+            (pivot_on / pivot_off - 1.0).abs() < 0.02,
+            "MIDI 60 is the pivot and must not move: {pivot_off} -> {pivot_on}"
+        );
+        // Two octaves below, full tracking takes 2 kHz down to 500 Hz.
+        let off_low = energy(36, 0.0);
+        let on_low = energy(36, 1.0);
+        assert!(
+            on_low < off_low * 0.5,
+            "key tracking should darken MIDI 36: {off_low} -> {on_low}"
+        );
     }
 }

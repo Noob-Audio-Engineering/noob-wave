@@ -7,9 +7,13 @@
  * Parameters: `filter_mode`, `filter_cutoff`, `filter_res`, `filter_env`,
  * `filter_key`. No streams: the curve is computed in the browser from the
  * parameters (`responseDb`), mirroring the Rust TPT state-variable filter
- * in `examples/noob-wave/src/dsp/filter.rs`, so the drawing follows knob
- * drags with zero round-trip. It shows the static response: envelope, key
- * tracking and LFO offsets are not folded in. No props or emits.
+ * in `src/dsp/filter.rs`, so the drawing follows knob drags with zero
+ * round-trip. It shows the static response: envelope, key tracking and LFO
+ * offsets are not folded in. No props or emits.
+ *
+ * The curve is drawn at the host's real sample rate (`useSampleRate`), not
+ * a fixed 48 kHz, because the prewarping that makes it exact is
+ * rate-dependent and would otherwise be visibly wrong in the top octave.
  *
  * Drawing is coalesced with `requestAnimationFrame` (`schedule`): several
  * parameter changes in one frame cost one redraw, and a `ResizeObserver`
@@ -18,16 +22,21 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { Knob } from '@noob-audio-engineering/noob-vst-webgui-framework/vue';
-import { useSynth } from '../composables/useSynth.js';
+import { useSampleRate, useSynth } from '../composables/useSynth.js';
 import Section from './Section.vue';
 
 const s = useSynth();
+const sampleRate = useSampleRate();
 const canvas = ref(null);
 let raf = null;
 
+/** Top and bottom of the drawn dB scale. */
+const TOP_DB = 24;
+const BOT_DB = -48;
+
 /**
  * Magnitude in dB at `freq` of the synth's TPT state-variable filter, for
- * display only. Mirrors `examples/noob-wave/src/dsp/filter.rs`:
+ * display only. Mirrors `src/dsp/filter.rs`:
  *   g = tan(π·fc/fs)          the prewarped cutoff,
  *   k = 2 − 1.98·res          the damping (res 0..1 → k 2..0.02, so full
  *                             resonance is just short of self-oscillation),
@@ -36,6 +45,14 @@ let raf = null;
  * filter rather than the analogue approximation. Modes: 0 LP 12 dB,
  * 1 LP 24 dB (a second low-pass stage with slightly less resonance, as
  * the DSP cascades it), 2 band-pass, 3 high-pass.
+ *
+ * The band-pass branch is `x / den`, the prototype's `s/(s²+ks+1)`, which
+ * is what `Svf::process` returns as its raw band output: its gain at
+ * cutoff is `1/k`, that is `Q`, running from −6 dB at no resonance to
+ * +34 dB at full. Normalising that peak to unity would draw a flat line
+ * while the engine delivers up to 34 dB of gain, so the two must agree
+ * here; `filter.rs` has a test pinning the engine's side of the same
+ * figure.
  */
 function responseDb(freq, cutoff, res, mode, sr) {
   const g = Math.tan((Math.PI * Math.min(cutoff, sr * 0.45)) / sr);
@@ -45,7 +62,7 @@ function responseDb(freq, cutoff, res, mode, sr) {
   const x = w / g;
   const den = Math.sqrt(Math.pow(1 - x * x, 2) + Math.pow(k * x, 2));
   let mag;
-  if (mode === 2) mag = (k * x) / den;
+  if (mode === 2) mag = x / den;
   else if (mode === 3) mag = (x * x) / den;
   else mag = 1 / den;
   let db = 20 * Math.log10(Math.max(mag, 1e-6));
@@ -64,13 +81,17 @@ function draw() {
   const ctx = c.getContext('2d');
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
-  const sr = 48000;
+  const sr = sampleRate.value;
   const minHz = 20;
-  const maxHz = 20000;
+  const maxHz = Math.min(20000, sr * 0.45);
   const xFor = (f) => (Math.log(f / minHz) / Math.log(maxHz / minHz)) * w;
-  const yFor = (db) => h * 0.15 + (-db / 48) * h * 0.8;
+  // A resonant band-pass reaches +34 dB and LP 24 goes higher still, so the
+  // scale carries real headroom above unity and a curve past either end
+  // rides the edge instead of leaving the canvas.
+  const yFor = (db) => (h * (TOP_DB - Math.max(BOT_DB, Math.min(TOP_DB, db)))) / (TOP_DB - BOT_DB);
   ctx.strokeStyle = 'rgba(255,255,255,0.06)';
   for (const f of [100, 1000, 10000]) {
+    if (f > maxHz) continue;
     ctx.beginPath();
     ctx.moveTo(xFor(f), 0);
     ctx.lineTo(xFor(f), h);
@@ -106,7 +127,7 @@ const schedule = () => {
     draw();
   });
 };
-watch(() => [s.filter.cutoff.norm, s.filter.res.norm, s.filter.mode.index], schedule);
+watch(() => [s.filter.cutoff.norm, s.filter.res.norm, s.filter.mode.index, sampleRate.value], schedule);
 let ro = null;
 onMounted(() => {
   ro = new ResizeObserver(schedule);

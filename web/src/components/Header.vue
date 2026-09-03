@@ -2,21 +2,29 @@
 /**
  * Header: connection dot and byline, undo / redo / A-B, previous / current /
  * next preset with a dropdown menu (factory presets, user presets, Save
- * As…), the active voice count, the live edit→echo round trip and the
- * sample rate the host reported.
+ * As…), a reset button, a fullscreen toggle, the active voice count, the
+ * live edit→echo round trip and the sample rate the host reported.
  *
  * No props or emits. Uses the framework `History` for undo / redo / A-B,
  * `modified` (set by the framework when any local edit completes, cleared
  * on preset load) for the asterisk, `stats.echoAvgMs` measured by the
  * client, the once-a-second `status` message (`sample_rate`), and
  * `ui.voices` to count slots with a level above zero. User presets are
- * stored in the plug-in's UI store under `presets.user` (see presets.js).
+ * stored in the plug-in's UI store under `presets.user` (see presets.js)
+ * and the list is rebuilt through `onUserPresetsChange`, so a preset saved
+ * in another window of the same instance appears here without a reload.
+ *
+ * Reset sends the `reset` message, which walks every parameter back to its
+ * default in the synth rather than in the page, so one message does what a
+ * parameter-by-parameter sweep would take dozens to do.
  */
-import { computed, ref } from 'vue';
-import { ContextMenu } from '@noob-audio-engineering/noob-vst-webgui-framework/vue';
-import { allPresets, loadPreset, savePresetAs, ui, useNoobVstWebguiFramework } from '../composables/useSynth.js';
+import { computed, onBeforeUnmount, ref, shallowRef } from 'vue';
+import { ContextMenu, send } from '@noob-audio-engineering/noob-vst-webgui-framework/vue';
+import { allPresets, loadPreset, savePresetAs, ui, useNoobVstWebguiFramework, useWindow } from '../composables/useSynth.js';
+import { onUserPresetsChange } from '../presets.js';
 
 const { history, historyState, connected, stats, status, modified } = useNoobVstWebguiFramework();
+const { fullscreen, toggleFullscreen } = useWindow();
 const menu = ref({ open: false, x: 0, y: 0 });
 const fmt = (ms) => (Number.isNaN(ms) ? '–' : ms < 1 ? `${Math.round(ms * 1000)} µs` : `${ms.toFixed(2)} ms`);
 // Active voices = slots whose level (first half of the `voices` stream) is above zero.
@@ -26,9 +34,17 @@ const voices = computed(() => {
   return n;
 });
 // The preset menu: one entry per preset (factory first, then user), then Save As.
-// Built on open, so a preset saved in another window shows up next time.
+// `presetEpoch` changes when the store's user presets do, which is what makes
+// this recompute after another window saves one.
+const presetEpoch = shallowRef(0);
+const offPresets = onUserPresetsChange(() => (presetEpoch.value += 1));
+onBeforeUnmount(() => offPresets?.());
+const presets = computed(() => {
+  presetEpoch.value; // eslint-disable-line no-unused-expressions -- the dependency that rebuilds the list
+  return allPresets();
+});
 const items = computed(() => [
-  ...allPresets().map((p, i) => ({ label: p.name, checked: ui.preset.name === p.name, action: () => loadPreset(i) })),
+  ...presets.value.map((p, i) => ({ label: p.name, checked: ui.preset.name === p.name, action: () => loadPreset(i) })),
   { divider: true },
   {
     label: 'Save As…',
@@ -41,6 +57,11 @@ const items = computed(() => [
 function openMenu(e) {
   const r = e.currentTarget.getBoundingClientRect();
   menu.value = { open: true, x: r.left, y: r.bottom + 4 };
+}
+/** Ask the synth to put every parameter back to its default, and show Init as current. */
+function reset() {
+  send('reset', {});
+  ui.preset = { name: 'Init', index: 0 };
 }
 </script>
 
@@ -59,10 +80,12 @@ function openMenu(e) {
       <button class="tb min-w-[180px] text-center" :class="{ 'text-slate-400': modified }" @click="openMenu">{{ ui.preset.name }}<span v-if="modified"> *</span></button>
       <button class="tb" title="Next preset" @click="loadPreset(ui.preset.index + 1)">›</button>
     </div>
+    <button class="tb" title="Reset every parameter to its default" @click="reset()">Reset</button>
     <div class="ml-auto flex items-center gap-3 text-[11px] text-slate-500 tabular">
       <span>voices <b class="text-slate-200">{{ voices }}</b></span>
       <span title="Time from sending an edit until the synth echoes it back">edit→echo <b class="text-emerald-300 font-medium">{{ fmt(stats.echoAvgMs) }}</b></span>
       <span v-if="status?.sample_rate">{{ status.sample_rate }} Hz</span>
+      <button class="tb" :class="{ on: fullscreen }" :title="fullscreen ? 'Leave fullscreen' : 'Fullscreen'" @click="toggleFullscreen()">⛶</button>
     </div>
     <ContextMenu :open="menu.open" :x="menu.x" :y="menu.y" :items="items" @close="menu.open = false" />
   </header>
@@ -72,5 +95,8 @@ function openMenu(e) {
 @reference '../style.css';
 .tb {
   @apply rounded px-2 py-1 text-[11px] border border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.09] disabled:opacity-30 disabled:hover:bg-white/[0.04] transition-colors leading-4;
+}
+.tb.on {
+  @apply bg-accent/90 text-ink-950 border-transparent font-semibold;
 }
 </style>

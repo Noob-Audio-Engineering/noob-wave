@@ -145,9 +145,10 @@ nih-plug this repository's `[patch]` section points at; keep that line.
            C D E F G A B C D E F
   ```
 
-  `a` is the keyboard's lowest visible C; `z` / `x` shift the QWERTY range
-  down / up an octave (the `− oct` / `+ oct` buttons do the same). Velocity
-  is fixed at 0.8 for mouse and QWERTY notes.
+  `a` is the keyboard's lowest visible C. `z` / `x` shift the QWERTY range
+  down / up an octave. Velocity is fixed at 0.8 for QWERTY notes and
+  glides; a mouse note takes its velocity from where on the key you click,
+  higher up the key being softer.
 * **Host MIDI** (plug-in only): notes with velocity, pitch bend (±2
   semitones), CC 120 / 123 (all notes off). Host notes light the on-screen
   keys in yellow.
@@ -183,7 +184,7 @@ index.
 | id | name | range | default |
 |---|---|---|---|
 | `filter_mode` | Filter Type | LP 12, LP 24, BP, HP | LP 12 |
-| `filter_cutoff` | Cutoff | 20 Hz – 20 kHz, log | 8 kHz |
+| `filter_cutoff` | Cutoff | 20 Hz – 20 kHz, log in the standalone / skewed in the plug-in | 8 kHz |
 | `filter_res` | Resonance | 0 – 100 % | 15 |
 | `filter_env` | Env Amount | -100 – 100 % (±6 octaves) | 40 |
 | `filter_key` | Key Track | 0 – 100 % | 50 |
@@ -192,16 +193,16 @@ index.
 
 | id | name | range | default (amp) | default (filt) |
 |---|---|---|---|---|
-| `amp_attack` / `filt_attack` | Attack | 1 ms – 10 s, log | 5 ms | 5 ms |
-| `amp_decay` / `filt_decay` | Decay | 1 ms – 10 s, log | 200 ms | 400 ms |
+| `amp_attack` / `filt_attack` | Attack | 1 ms – 10 s, log in the standalone / skewed in the plug-in | 5 ms | 5 ms |
+| `amp_decay` / `filt_decay` | Decay | 1 ms – 10 s, log in the standalone / skewed in the plug-in | 200 ms | 400 ms |
 | `amp_sustain` / `filt_sustain` | Sustain | 0 – 100 % | 80 | 30 |
-| `amp_release` / `filt_release` | Release | 1 ms – 10 s, log | 300 ms | 400 ms |
+| `amp_release` / `filt_release` | Release | 1 ms – 10 s, log in the standalone / skewed in the plug-in | 300 ms | 400 ms |
 
 ### `lfo`
 
 | id | name | range | default |
 |---|---|---|---|
-| `lfo_rate` | LFO Rate | 0.02 – 20 Hz, log | 2 Hz |
+| `lfo_rate` | LFO Rate | 0.02 – 20 Hz, log in the standalone / skewed in the plug-in | 2 Hz |
 | `lfo_shape` | LFO Shape | Sine, Triangle, Saw, Square, S&H | Sine |
 | `lfo_pos` | LFO → Position | -100 – 100 % | 0 |
 | `lfo_cutoff` | LFO → Cutoff | -4 – 4 oct | 0 |
@@ -250,8 +251,11 @@ flowchart TB
   vca --> lr["L = mid + side · R = mid − side"]
   lr --> mix["Σ voices"] --> master["master gain"] --> out["out"]
 ```
-  samples per table, each in 9 band-limited mip levels (level *m* keeps
-  the first `1024 >> m` harmonics). Factory tables are defined as harmonic
+* **Wavetables** (`dsp/wavetable.rs`): 6 factory tables, 32 frames of 2048
+  samples per table, each in 11 band-limited mip levels (level *m* keeps
+  the first `1024 >> m` harmonics, down to a single harmonic at the top of
+  the ladder, so every note on the keyboard has an alias-free level to play
+  from). Factory tables are defined as harmonic
   spectra and rendered with an inverse FFT, so the mip levels are exact.
   Playback picks the level whose top harmonic stays below Nyquist for the
   note (evaluated for the highest detuned unison voice) and interpolates
@@ -292,8 +296,10 @@ by value, so both hosts rebuild it every block for free.
   then walks the host's events sample-accurately, rendering up to each
   one. Host notes are echoed to the page as events so the keyboard lights
   up. It returns `KeepAlive` while voices sound so the tail is not cut.
-* The editor opens at 1080 × 640; the page can request another size with a
-  `resize` message. `initialize` sends the page a `sample_rate` message.
+* The editor opens at 1180 × 760 and will not go below 1000 × 620, the size
+  at which the oscillator buttons start to overlap the envelope knobs; the
+  page can request another size within those limits with a `resize`
+  message. `initialize` sends the page a `sample_rate` message.
 * By default every instance probes a port range hashed from the plug-in
   name (see `PortPolicy::for_name` in `noob-vst-webgui-framework`), so several instances
   coexist and each keeps a stable origin.
