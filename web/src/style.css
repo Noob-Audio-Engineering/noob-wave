@@ -1,0 +1,77 @@
+/*
+ * Noob-Wave styling. Tailwind v4 is configured in CSS: `@import
+ * 'tailwindcss'` pulls in the framework, `@theme` declares the design
+ * tokens, and the rest are the few global rules the SPA needs. Components
+ * use utility classes in their templates; repeated button styles are
+ * `@apply`ed in scoped `<style>` blocks, which must start with
+ * `@reference '../style.css'` so Tailwind can resolve the tokens and
+ * utilities inside that isolated block.
+ */
+@import 'tailwindcss';
+/*
+ * Tailwind scans only this app's sources by default. The shared Vue
+ * components (Knob, Popover, ContextMenu, LevelMeter) live in the linked
+ * `@noob-audio-engineering/noob-vst-webgui-framework` package at the repo root and use utility classes too, so
+ * their directory is added as a content source.
+ */
+@source '../node_modules/@noob-audio-engineering/noob-vst-webgui-framework/crates/noob-vst-webgui-framework/web/vue';
+
+/*
+ * Design tokens. `ink-*` is the near-black palette for every surface
+ * (950 = page, 900 = cards and bars, 800 = floating panels, 700 = inputs
+ * and menus, 600 = hover / borders). `accent` is the warm orange of the
+ * oscillator, amp envelope and scope; `accent-2` the blue of the filter,
+ * its envelope and the spectrum; the LFO uses a literal purple. Tailwind
+ * turns every `--color-*` into utilities such as `bg-ink-900`,
+ * `text-accent-2`.
+ */
+@theme {
+  --color-ink-950: #0b0d12;
+  --color-ink-900: #10131a;
+  --color-ink-800: #161a23;
+  --color-ink-700: #1f2532;
+  --color-ink-600: #2a3242;
+  --color-accent: #ff8a3d;
+  --color-accent-2: #58c4ff;
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+/* Full-height app shell: the grid fills the window and nothing scrolls. */
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  /* Knob drags and keyboard glissandi must never scroll or pinch-zoom the page on touch screens. */
+  touch-action: none;
+}
+
+/*
+ * The framework's vanilla components (scope, spectrum, wavetable view,
+ * envelope, keyboard, meters, knob canvases) carry no Tailwind classes;
+ * they read these custom properties, so the app's palette reaches them
+ * without a build-time dependency. The `--noob-vst-webgui-framework-key-*` ones colour the
+ * on-screen keyboard (`remote` = notes arriving from the host). Anything
+ * not set here falls back to the component default.
+ */
+:root {
+  --noob-vst-webgui-framework-accent: var(--color-accent);
+  --noob-vst-webgui-framework-text: #e2e8f0;
+  --noob-vst-webgui-framework-text-dim: #64748b;
+  --noob-vst-webgui-framework-track: rgba(255, 255, 255, 0.12);
+  --noob-vst-webgui-framework-grid: rgba(255, 255, 255, 0.06);
+  --noob-vst-webgui-framework-panel: rgba(22, 26, 35, 0.96);
+  --noob-vst-webgui-framework-border: rgba(255, 255, 255, 0.1);
+  --noob-vst-webgui-framework-bg: #0b0d12;
+  --noob-vst-webgui-framework-key-white: #e2e8f0;
+  --noob-vst-webgui-framework-key-black: #1e293b;
+  --noob-vst-webgui-framework-key-remote: #ffd166;
+}
+
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
