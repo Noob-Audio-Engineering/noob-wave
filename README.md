@@ -26,6 +26,19 @@ in the framework crates.
 | Telemetry | scope, spectrum, meter, per-voice state, modulation, wavetable preview |
 | UI | `web/` — Vue 3 + Tailwind v4 + Vite 7 on top of `@noob-audio-engineering/noob-vst-webgui-framework/vue` |
 
+## Install it
+
+Every commit on `main` is built for Windows and macOS and published to the
+rolling [`latest`](https://github.com/Noob-Audio-Engineering/noob-wave/releases/tag/latest)
+release: a VST3 and a CLAP in one zip, with a checksummed manifest beside them
+and a photograph of that build running.
+
+The easy way is the [Noob Plugin
+Manager](https://github.com/Noob-Audio-Engineering/noob-plugin-manager), which
+installs and updates every plug-in in this organisation and verifies the
+checksum before it writes anything. Or take the zip and unpack it into your
+plug-in folders yourself.
+
 ## Layout
 
 ```
