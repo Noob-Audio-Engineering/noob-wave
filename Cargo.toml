@@ -11,6 +11,19 @@ homepage = "https://github.com/Noob-Audio-Engineering/noob-wave"
 # A plug-in, not a library: nothing here goes to crates.io.
 publish = false
 
+
+# How this plug-in presents itself in the plug-in manager. It lives here so
+# each plug-in owns its own description --- the manager has no list of them.
+[package.metadata.noob]
+name = "Noob Wave"
+accent = "#bb9af7"
+tagline = "A wavetable synthesiser with the table on the face."
+features = [
+    "Wavetable oscillators with the table drawn as it sounds",
+    "The interface is the OS web view, not a bitmap",
+    "Resizable from the page and from the host",
+]
+
 [lib]
 crate-type = ["cdylib", "lib"]
 
