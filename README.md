@@ -57,7 +57,7 @@ plugin --open` for the rendered version.
 cd web && npm install && npm run build && cd ..
 
 # 2. run the standalone: default audio device, server on 4243 (or the next free port)
-cargo run --bin noob-wave-standalone -- --open
+cargo run --features plugin --bin noob-wave-standalone -- --open
 ```
 
 Flags:
