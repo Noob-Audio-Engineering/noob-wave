@@ -15,6 +15,7 @@ publish = false
 # How this plug-in presents itself in the plug-in manager. It lives here so
 # each plug-in owns its own description --- the manager has no list of them.
 [package.metadata.noob]
+kind = "instrument"
 name = "Noob Wave"
 accent = "#bb9af7"
 tagline = "A wavetable synthesiser with the table on the face."
